@@ -1,3 +1,5 @@
+// ./src/agent/conversation.js
+
 import settings from './settings.js';
 import { containsCommand } from './commands/index.js';
 import { sendBotChatToServer } from './mindserver_proxy.js';

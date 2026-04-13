@@ -1,5 +1,6 @@
 import { History } from './history.js';
 import { Coder } from './coder.js';
+import * as skills from './library/skills.js';
 import { VisionInterpreter } from './vision/vision_interpreter.js';
 import { Prompter } from '../models/prompter.js';
 import { initModes } from './modes.js';
@@ -29,16 +30,14 @@ export class Agent {
         this.prompter = new Prompter(this, settings.profile);
         this.name = (this.prompter.getName() || '').trim();
         console.log(`Initializing agent ${this.name}...`);
-        
-        // Validate Name Format
-        // connection_handler now ensures the message has [LoginGuard] prefix
+
         const nameCheck = validateNameFormat(this.name);
         if (!nameCheck.success) {
             log(this.name, nameCheck.msg);
             process.exit(1);
             return;
         }
-        
+
         this.history = new History(this);
         this.coder = new Coder(this);
         this.npc = new NPCContoller(this);
@@ -47,44 +46,38 @@ export class Agent {
         convoManager.initAgent(this);
         await this.prompter.initExamples();
 
-        // load mem first before doing task
         let save_data = null;
         if (load_mem) {
             save_data = this.history.load();
         }
-        let taskStart = null;
-        if (save_data) {
-            taskStart = save_data.taskStart;
-        } else {
-            taskStart = Date.now();
-        }
+
+        const taskStart = save_data ? save_data.taskStart : Date.now();
         this.task = new Task(this, settings.task, taskStart);
         this.blocked_actions = settings.blocked_actions.concat(this.task.blocked_actions || []);
         blacklistCommands(this.blocked_actions);
 
-        console.log(this.name, 'logging into minecraft...');
+        console.log(this.name, '[agent.js initBot ln 70] Logging into minecraft...');
         this.bot = initBot(this.name);
-        
-        // Connection Handler
+		
+		// give skills access to the agent + memory_bank
+		this.bot.agent = this;
+		
+        console.log('[agent.js initBot] Ashfinder loaded:', !!this.bot.ashfinder);
+
         const onDisconnect = (event, reason) => {
             if (this._disconnectHandled) return;
             this._disconnectHandled = true;
-
-            // Log and Analyze
-            // handleDisconnection handles logging to console and server
-            const { type } = handleDisconnection(this.name, reason);
-     
+            handleDisconnection(this.name, reason);
             process.exit(1);
         };
-        
-        // Bind events
+
         this.bot.once('kicked', (reason) => onDisconnect('Kicked', reason));
         this.bot.once('end', (reason) => onDisconnect('Disconnected', reason));
         this.bot.on('error', (err) => {
             if (String(err).includes('Duplicate') || String(err).includes('ECONNREFUSED')) {
-                 onDisconnect('Error', err);
+                onDisconnect('Error', err);
             } else {
-                 log(this.name, `[LoginGuard] Connection Error: ${String(err)}`);
+                log(this.name, `[LoginGuard] Connection Error: ${String(err)}`);
             }
         });
 
@@ -93,128 +86,282 @@ export class Agent {
         this.bot.on('login', () => {
             console.log(this.name, 'logged in!');
             serverProxy.login();
-            
-            // Set skin for profile, requires Fabric Tailor. (https://modrinth.com/mod/fabrictailor)
-            if (this.prompter.profile.skin)
+
+            if (this.prompter.profile.skin) {
                 this.bot.chat(`/skin set URL ${this.prompter.profile.skin.model} ${this.prompter.profile.skin.path}`);
-            else
-                this.bot.chat(`/skin clear`);
+            } else {
+                this.bot.chat('/skin clear');
+            }
         });
-		const spawnTimeoutDuration = settings.spawn_timeout;
+
+        const spawnTimeoutDuration = settings.spawn_timeout;
         const spawnTimeout = setTimeout(() => {
             const msg = `Bot has not spawned after ${spawnTimeoutDuration} seconds. Exiting.`;
             log(this.name, msg);
             process.exit(1);
         }, spawnTimeoutDuration * 1000);
+
         this.bot.once('spawn', async () => {
+            console.log('Ashfinder after spawn:', !!this.bot.ashfinder);
+            console.log('Baritone after spawn:', !!this.bot.baritone);
+
             try {
                 clearTimeout(spawnTimeout);
-                addBrowserViewer(this.bot, count_id);
-                console.log('Initializing vision intepreter...');
-                this.vision_interpreter = new VisionInterpreter(this, settings.allow_vision);
 
-                // wait for a bit so stats are not undefined
-                await new Promise((resolve) => setTimeout(resolve, 1000));
-                
+                // Reduce chunk/network pressure as early as possible
+                if (this.bot.settings) {
+                    this.bot.settings.viewDistance = 'tiny';
+                }
+
+                // Optional Baritone tuning for laggier Oracle/VPN/VMware routes
+                if (this.bot.baritone && this.bot.baritone.settings) {
+                    this.bot.baritone.settings.primaryTimeoutMS = 2000;
+                    this.bot.baritone.settings.failureTimeoutMS = 5000;
+                }
+
+                await this.bot.waitForChunksToLoad();
+
+                if (this.bot.ashfinder) {
+                    // Keep pathfinding responsive without letting it hang forever
+                    this.bot.ashfinder.config.thinkTimeout = 30000;
+                    this.bot.ashfinder.config.chunkCaching = true;
+                    this.bot.ashfinder.config.breakBlocks = true;
+                    this.bot.ashfinder.config.placeBlocks = true;
+                }
+
+                if (this.bot.autoEat) {
+                    this.bot.autoEat.setOpts({
+                        priority: 'foodPoints',
+                        minHunger: 14,
+                        bannedFood: [
+                            'rotten_flesh',
+                            'spider_eye',
+                            'poisonous_potato',
+                            'pufferfish',
+                            'chicken'
+                        ]
+                    });
+                    this.bot.autoEat.enableAuto();
+                }
+
+                if (this.bot.armorManager) {
+                    await this.bot.armorManager.equipAll();
+                }
+
+                await new Promise((resolve) => setTimeout(resolve, 3000));
+
+                if (!this.vision_interpreter) {
+                    console.log('Initializing vision interpreter...');
+                    this.vision_interpreter = new VisionInterpreter(this, settings.allow_vision);
+                    addBrowserViewer(this.bot, this.count_id);
+                }
+
                 console.log(`${this.name} spawned.`);
                 this.clearBotLogs();
-              
-                this._setupEventHandlers(save_data, init_message);
+
+                await this._setupEventHandlers(save_data, init_message);
                 this.startEvents();
-              
-                if (!load_mem) {
-                    if (settings.task) {
+
+                if (settings.task) {
+                    this.task.setAgentGoal();
+                    if (!load_mem) {
                         this.task.initBotTask();
-                        this.task.setAgentGoal();
-                    }
-                } else {
-                    // set the goal without initializing the rest of the task
-                    if (settings.task) {
-                        this.task.setAgentGoal();
                     }
                 }
 
                 await new Promise((resolve) => setTimeout(resolve, 10000));
                 this.checkAllPlayersPresent();
 
-            } catch (error) {
-                console.error('Error in spawn event:', error);
-                process.exit(0);
+            } catch (err) {
+                console.error(`${this.name} spawn setup failed:`, err);
             }
         });
     }
 
     async _setupEventHandlers(save_data, init_message) {
-        const ignore_messages = [
-            "Set own game mode to",
-            "Set the time to",
-            "Set the difficulty to",
-            "Teleported ",
-            "Set the weather to",
-            "Gamerule "
+        const ignoreMessages = [
+            'Set own game mode to',
+            'Set the time to',
+            'Set the difficulty to',
+            'Teleported ',
+            'Set the weather to',
+            'Gamerule '
         ];
-        
-        const respondFunc = async (username, message) => {
-            if (message === "") return;
-            if (username === this.name) return;
-            if (settings.only_chat_with.length > 0 && !settings.only_chat_with.includes(username)) return;
-            try {
-                if (ignore_messages.some((m) => message.startsWith(m))) return;
 
+        const shouldIgnoreMessage = (username, message) => {
+            if (!message || message.trim() === '') return true;
+            if (username === this.name) return true;
+            if (username === this.bot.username) return true;
+
+            if (
+                settings.only_chat_with.length > 0 &&
+                !settings.only_chat_with.includes(username)
+            ) {
+                return true;
+            }
+
+            if (ignoreMessages.some((prefix) => message.startsWith(prefix))) {
+                return true;
+            }
+
+            return false;
+        };
+
+        const handleGoToCoordinates = async (message) => {
+            const coords = message
+                .replace(/,/g, ' ')
+                .trim()
+                .split(/\s+/)
+                .slice(2);
+
+            const x = parseFloat(coords[0]);
+            const y = parseFloat(coords[1]);
+            const z = parseFloat(coords[2]);
+
+            if ([x, y, z].some(Number.isNaN)) {
+                this.bot.chat('Use: go to <x> <y> <z>');
+                return true;
+            }
+
+            this.bot.chat(`Understood. Moving to ${x} ${y} ${z}.`);
+
+            try {
+                await skills.goToPosition(this.bot, x, y, z, 2);
+                this.bot.chat('I arrived.');
+            } catch (err) {
+                console.error('Movement failed:', err);
+                this.bot.chat(`I could not get there: ${err.message}`);
+            }
+
+            return true;
+        };
+
+        const handleGoToPlayer = async (targetName) => {
+            const target = this.bot.players[targetName]?.entity;
+            if (!target) {
+                this.bot.chat(`Could not find ${targetName}.`);
+                return true;
+            }
+
+            try {
+                await skills.goToPosition(
+                    this.bot,
+                    target.position.x,
+                    target.position.y,
+                    target.position.z,
+                    2
+                );
+                this.bot.chat(`Going to ${targetName}.`);
+            } catch (err) {
+                console.error('Go to player failed:', err);
+                this.bot.chat(`Could not reach ${targetName}.`);
+            }
+
+            return true;
+        };
+
+        const respondFunc = async (username, message) => {
+            if (shouldIgnoreMessage(username, message)) return;
+
+            try {
                 this.shut_up = false;
 
                 console.log(this.name, 'received message from', username, ':', message);
 
                 if (convoManager.isOtherAgent(username)) {
-                    console.warn('received whisper from other bot??')
+                    console.warn('received whisper from other bot??');
+                    return;
                 }
-                else {
-                    let translation = await handleEnglishTranslation(message);
-                    this.handleMessage(username, translation);
-                }
+
+                const translation = await handleEnglishTranslation(message);
+                this.handleMessage(username, translation);
             } catch (error) {
                 console.error('Error handling message:', error);
             }
-        }
-
-		this.respondFunc = respondFunc;
-
-        this.bot.on('whisper', respondFunc);
-        
-        this.bot.on('chat', (username, message) => {
-            if (serverProxy.getNumOtherAgents() > 0) return;
-            // only respond to open chat messages when there are no other agents
-            respondFunc(username, message);
-        });
-
-        // Set up auto-eat
-        this.bot.autoEat.options = {
-            priority: 'foodPoints',
-            startAt: 14,
-            bannedFood: ["rotten_flesh", "spider_eye", "poisonous_potato", "pufferfish", "chicken"]
         };
 
-        if (save_data?.self_prompt) {
+        this.respondFunc = respondFunc;
+
+        this.bot.on('whisper', respondFunc);
+
+        this.bot.on('chat', async (username, message) => {
+            if (!message || !message.trim()) return;
+            if (username === this.bot.username || username === this.name) return;
+
+            const normalized = message.trim().toLowerCase();
+
+            if (normalized.startsWith('go to ')) {
+                const afterGoTo = message.trim().slice(6).trim();
+                const coordText = afterGoTo.replace(/,/g, ' ');
+
+                if (/^-?\d+(\.\d+)?\s+-?\d+(\.\d+)?\s+-?\d+(\.\d+)?$/.test(coordText)) {
+                    await handleGoToCoordinates(message);
+                    return;
+                }
+
+                await handleGoToPlayer(afterGoTo);
+                return;
+            }
+
+            if (
+                normalized === 'come here' ||
+                normalized === `come here ${this.name.toLowerCase()}` ||
+                normalized === `come here please ${this.name.toLowerCase()}`
+            ) {
+                const player = this.bot.players[username]?.entity;
+                if (!player) {
+                    this.bot.chat('Could not find you.');
+                    return;
+                }
+
+                try {
+                    await skills.goToPosition(
+                        this.bot,
+                        player.position.x,
+                        player.position.y,
+                        player.position.z,
+                        2
+                    );
+                    this.bot.chat('Arrived.');
+                } catch (err) {
+                    console.error('Come here failed:', err);
+                    this.bot.chat('Could not get there.');
+                }
+                return;
+            }
+
+            if (serverProxy.getNumOtherAgents() > 0) return;
+
+            try {
+                await respondFunc(username, message);
+            } catch (error) {
+                console.error('Error handling chat:', error);
+            }
+        });
+
+        if (save_data && save_data.self_prompt) {
             if (init_message) {
                 this.history.add('system', init_message);
             }
-            await this.self_prompter.handleLoad(save_data.self_prompt, save_data.self_prompting_state);
+            await this.self_prompter.handleLoad(
+                save_data.self_prompt,
+                save_data.self_prompting_state
+            );
         }
-        if (save_data?.last_sender) {
+
+        if (save_data && save_data.last_sender) {
             this.last_sender = save_data.last_sender;
             if (convoManager.otherAgentInGame(this.last_sender)) {
                 const msg_package = {
-                    message: `You have restarted and this message is auto-generated. Continue the conversation with me.`,
+                    message: 'You have restarted and this message is auto-generated. Continue the conversation with me.',
                     start: true
                 };
                 convoManager.receiveFromBot(this.last_sender, msg_package);
             }
-        }
-        else if (init_message) {
+        } else if (init_message) {
             await this.handleMessage('system', init_message, 2);
-        }
-        else {
-            this.openChat("Hello world! I am "+this.name);
+        } else {
+            this.openChat('Hello world! I am ' + this.name);
         }
     }
 
@@ -233,9 +380,17 @@ export class Agent {
     requestInterrupt() {
         this.bot.interrupt_code = true;
         this.bot.stopDigging();
-        this.bot.collectBlock.cancelTask();
-        this.bot.pathfinder.stop();
-        this.bot.pvp.stop();
+        this.bot.clearControlStates();
+
+        if (this.bot.collectBlock && typeof this.bot.collectBlock.stop === 'function') {
+            this.bot.collectBlock.stop();
+        }
+        if (this.bot.pvp && typeof this.bot.pvp.stop === 'function') {
+            this.bot.pvp.stop();
+        }
+        if (this.bot.ashfinder && typeof this.bot.ashfinder.stop === 'function') {
+            this.bot.ashfinder.stop();
+        }
     }
 
     clearBotLogs() {
@@ -258,6 +413,8 @@ export class Agent {
             return false;
         }
 
+        this._responseFailureCount = 0;
+
         let used_command = false;
         if (max_responses === null) {
             max_responses = settings.max_commands === -1 ? Infinity : settings.max_commands;
@@ -269,8 +426,38 @@ export class Agent {
         const self_prompt = source === 'system' || source === this.name;
         const from_other_bot = convoManager.isOtherAgent(source);
 
+        const lowerMessage = String(message || '').toLowerCase();
+
+        const user_command_name = (!self_prompt && !from_other_bot)
+            ? containsCommand(message)
+            : null;
+
+        const urgentAdminTask =
+            !self_prompt &&
+            !from_other_bot &&
+            !!user_command_name;
+			
+		if (urgentAdminTask) {
+			console.log(`[Priority] Pausing self-prompting for forced command: ${message}`);
+
+			if (this.self_prompter.isActive()) {
+				this.self_prompter.stopLoop();
+				this.self_prompter.pause();
+			}
+
+			this.actions.cancelResume();
+
+			// THIS IS THE FIX
+			if (!this.isIdle()) {
+				console.log("[Priority] Interrupting current action and clearing queue...");
+
+				await this.actions.stop(true); // THIS CLEARS THE QUEUE
+
+				await new Promise(resolve => setTimeout(resolve, 300));
+			}
+		}
+
         if (!self_prompt && !from_other_bot) { // from user, check for forced commands
-            const user_command_name = containsCommand(message);
             if (user_command_name) {
                 if (!commandExists(user_command_name)) {
                     this.routeResponse(source, `Command '${user_command_name}' does not exist.`);
@@ -282,6 +469,10 @@ export class Agent {
                     // add the preceding message to the history to give context for newAction
                     this.history.add(source, message);
                 }
+				console.log('[DEBUG] About to execute user command:', message);
+console.log('[DEBUG] Bot entity exists:', !!this.bot?.entity);
+console.log('[DEBUG] Bot username:', this.bot?.username);
+console.log('[DEBUG] Time:', new Date().toISOString());
                 let execute_res = await executeCommand(this, message);
                 if (execute_res) 
                     this.routeResponse(source, execute_res);
@@ -317,7 +508,7 @@ export class Agent {
         for (let i=0; i<max_responses; i++) {
             if (checkInterrupt()) break;
             let history = this.history.getHistory();
-            let res = await this.prompter.promptConvo(history);
+            let res = await this.prompter.prompt(history);
 
             console.log(`${this.name} full response to ${source}: ""${res}""`);
 
@@ -359,15 +550,53 @@ export class Agent {
                         this.routeResponse(source, pre_message);
                 }
 
-                let execute_res = await executeCommand(this, res);
+				let execute_res = await executeCommand(this, res);
 
-                console.log('Agent executed:', command_name, 'and got:', execute_res);
-                used_command = true;
+				console.log('Agent executed:', command_name, 'and got:', execute_res);
+				used_command = true;
 
-                if (execute_res)
-                    this.history.add('system', execute_res);
-                else
-                    break;
+				const executeText = String(execute_res || '').toLowerCase();
+
+				if (execute_res) {
+					this.history.add('system', execute_res);
+				} else {
+					break;
+				}
+
+				// hard stop commands should end the loop immediately
+				if (command_name === '!stop' || command_name === '!stfu') {
+					break;
+				}
+
+				const softFailures = [
+					'could not find',
+					'invalid block type',
+					'invalid item type',
+					'failed',
+					'unsafe to break',
+					'i lost sight of you',
+					'no nearby',
+					'food is full',
+					'does not exist',
+					'was given 0 args',
+					'requires 1 args',
+					'requires 2 args',
+					'no code block generated',
+					'agent would not write code',
+					'no response data'
+				];
+
+				if (softFailures.some(s => executeText.includes(s))) {
+					this._responseFailureCount += 1;
+					console.warn(`Soft failure ${this._responseFailureCount}/10`);
+
+					if (this._responseFailureCount >= 10) {
+						console.warn('Breaking response loop after repeated soft failures.');
+						break;
+					}
+				} else {
+					this._responseFailureCount = 0;
+				}
             }
             else { // conversation response
                 this.history.add(this.name, res);
@@ -410,7 +639,7 @@ export class Agent {
             to_translate = to_translate.substring(0, translate_up_to);
             remaining = message.substring(translate_up_to);
         }
-        message = (await handleTranslation(to_translate)).trim() + " " + remaining;
+        message = (await handleTranslation(to_translate)).trim() + ' ' + remaining;
         // newlines are interpreted as separate chats, which triggers spam filters. replace them with spaces
         message = message.replaceAll('\n', ' ');
 
@@ -462,11 +691,18 @@ export class Agent {
                 this.cleanKill(msg);
             }
         });
-        this.bot.on('death', () => {
-            this.actions.cancelResume();
-            this.actions.stop();
-        });
-        this.bot.on('kicked', (reason) => {
+		this.bot.on('death', () => {
+		this.actions.cancelResume();
+		this.actions.stop();
+
+		this.bot.clearControlStates();
+		this.bot.interrupt_code = true;
+
+		if (this.bot.ashfinder && typeof this.bot.ashfinder.stop === 'function') {
+			this.bot.ashfinder.stop();
+		}
+	});
+		this.bot.on('kicked', (reason) => {
             if (!this._disconnectHandled) {
                 const { msg } = handleDisconnection(this.name, reason);
                 this.cleanKill(msg);
@@ -475,19 +711,39 @@ export class Agent {
         this.bot.on('messagestr', async (message, _, jsonMsg) => {
             if (jsonMsg.translate && jsonMsg.translate.startsWith('death') && message.startsWith(this.name)) {
                 console.log('Agent died: ', message);
-                let death_pos = this.bot.entity.position;
-                this.memory_bank.rememberPlace('last_death_position', death_pos.x, death_pos.y, death_pos.z);
-                let death_pos_text = null;
-                if (death_pos) {
-                    death_pos_text = `x: ${death_pos.x.toFixed(2)}, y: ${death_pos.y.toFixed(2)}, z: ${death_pos.z.toFixed(2)}`;
+
+                const pos = this.bot?.entity?.position;
+                const safeX = pos && Number.isFinite(pos.x) ? pos.x : null;
+                const safeY = pos && Number.isFinite(pos.y) ? pos.y : null;
+                const safeZ = pos && Number.isFinite(pos.z) ? pos.z : null;
+
+                if (safeX !== null && safeY !== null && safeZ !== null) {
+                    this.memory_bank.rememberPlace('last_death_position', safeX, safeY, safeZ);
                 }
-                let dimention = this.bot.game.dimension;
-                this.handleMessage('system', `You died at position ${death_pos_text || "unknown"} in the ${dimention} dimension with the final message: '${message}'. Your place of death is saved as 'last_death_position' if you want to return. Previous actions were stopped and you have respawned.`);
-            }
-        });
+
+                let death_pos_text = 'unknown';
+                if (safeX !== null && safeY !== null && safeZ !== null) {
+                    death_pos_text = `x: ${safeX.toFixed(2)}, y: ${safeY.toFixed(2)}, z: ${safeZ.toFixed(2)}`;
+                }
+
+                const dimension = this.bot.game.dimension;
+
+				this.bot.clearControlStates();
+				this.bot.interrupt_code = true;
+				if (this.bot.ashfinder && typeof this.bot.ashfinder.stop === 'function') {
+					this.bot.ashfinder.stop();
+				}
+
+                this.handleMessage(
+                    'system',
+                    `You died at position ${death_pos_text} in the ${dimension} dimension with the final message: '${message}'. Your place of death is saved as 'last_death_position' if you want to return. Previous actions were stopped and you have respawned.`
+                );
+            }        });
         this.bot.on('idle', () => {
             this.bot.clearControlStates();
-            this.bot.pathfinder.stop(); // clear any lingering pathfinder
+            if (this.bot.ashfinder && typeof this.bot.ashfinder.stop === 'function') {
+                this.bot.ashfinder.stop();
+            } // clear any lingering baritone
             this.bot.modes.unPauseAll();
             setTimeout(() => {
                 if (this.isIdle()) {

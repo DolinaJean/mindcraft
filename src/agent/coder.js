@@ -1,3 +1,5 @@
+// ./src/agent/coder.js
+
 import { writeFile, readFile, mkdirSync } from 'fs';
 import { makeCompartment, lockdown } from './library/lockdown.js';
 import * as skills from './library/skills.js';
@@ -27,56 +29,247 @@ export class Coder {
     async generateCode(agent_history) {
         this.agent.bot.modes.pause('unstuck');
         lockdown();
+
         // this message history is transient and only maintained in this function
-        let messages = agent_history.getHistory(); 
-        messages.push({role: 'system', content: 'Code generation started. Write code in codeblock in your response:'});
+        let messages = agent_history.getHistory();
+
+        messages.push({
+            role: 'system',
+			content: `
+You are Dingbat writing executable JavaScript for a Minecraft Mindcraft bot built on Mineflayer.
+
+You MUST:
+- Return exactly ONE JavaScript code block using triple backticks
+- Do NOT include any text before or after the code block
+- Do NOT explain anything
+- Only output runnable code
+- Output only the BODY of the action code
+- Do NOT write export statements
+- Do NOT define function main(...)
+- Do NOT wrap code in async functions
+- The runtime already provides the execution wrapper
+
+You have access to:
+- skills.*
+- world.*
+- Vec3
+- bot
+
+CRITICAL API RULES:
+- You may ONLY call functions that actually exist in the provided skill and world docs
+- Do NOT invent helpers such as skills.findAndCraft
+- If a helper does not exist, combine existing skills.* calls instead
+- Prefer existing skills.* helpers over raw custom logic
+- If you are unsure whether a function exists, do not use it
+
+GENERAL RULES:
+- Prefer safe, incremental actions over ambitious plans
+- Observe the environment and inventory before acting
+- If pathfinding or movement helpers already exist, use them instead of reinventing movement
+- If a task requires placement, first ensure there is a safe place to stand and place blocks
+
+SURVIVAL RULES:
+- If the bot is in a dangerous or unstable position, stabilize first
+- Do NOT attempt crafting or building if there is no safe place to stand or place blocks
+- If descending is unsafe, create a safe platform first
+- Avoid falls, lava, drowning, suffocation, and unnecessary combat
+- Do not break support blocks unless a safe landing or escape path exists
+
+TASK RULES:
+- For multi-step tasks, do the smallest safe next step that makes progress
+- If a crafting table or other workstation is required, first create or reach a safe working area
+- If the task cannot be completed safely, write code that stabilizes the bot and logs the blocker
+- Use only documented functions from $CODE_DOCS
+
+STORAGE RULES:
+- To stash excess inventory in a chest, prefer skills.stashInventoryInNearbyChest(bot).
+- Do NOT invent chest helpers like skills.takeFromInventory, skills.depositIntoChest, or world.findNearestEntityByName.
+- Do NOT manipulate chest storage manually if a high-level stash helper already exists.
+- If asked to empty or stash inventory, use skills.stashInventoryInNearbyChest(bot) directly.
+
+CRAFTING AND EQUIPMENT RULES:
+- To obtain materials before crafting, prefer skills.ensureItem(bot, "item_name", count) when available.
+- Use skills.craftRecipe(bot, "item_name", count) to craft items.
+- Do NOT pass ingredient arrays or recipe grids to skills.craftRecipe.
+- Use skills.equip(bot, "item_name") to equip armor, tools, weapons, or shields.
+- Do NOT pass slot numbers to skills.equip.
+- skills.craftRecipe may automatically use or place a crafting table if needed.
+- For armor tasks, prefer high-level armor helpers if they exist.
+- A full armor set is helmet, chestplate, leggings, and boots.
+- Diamond armor requires 24 diamonds total.
+- Netherite armor requires diamond armor pieces plus netherite ingots.
+
+RESOURCE ACQUISITION RULES:
+- To obtain materials before crafting, prefer skills.ensureItem(bot, "item_name", count) when available.
+- Before crafting, check whether required materials are already in inventory.
+- If materials are missing, gather them before attempting to craft.
+- Prefer high-level gathering helpers when available.
+- For armor tasks, if the bot lacks enough materials, gather the required materials first, then craft and equip.
+- For diamond armor, 24 diamonds are required.
+- Use existing movement, mining, and navigation helpers instead of inventing new pathfinding APIs.
+- In this project, prefer existing Mindcraft skills and Ashfinder-compatible helpers when available.
+
+Always produce valid working code. No exceptions.
+
+Example format:
+\`\`\`javascript
+await skills.goToSurface(bot);
+\`\`\`
+`
+        });
 
         const MAX_ATTEMPTS = 5;
         const MAX_NO_CODE = 3;
 
         let code = null;
         let no_code_failures = 0;
-        for (let i=0; i<MAX_ATTEMPTS; i++) {
-            if (this.agent.bot.interrupt_code)
+
+        for (let i = 0; i < MAX_ATTEMPTS; i++) {
+            if (this.agent.bot.interrupt_code) {
                 return null;
+            }
+
             const messages_copy = JSON.parse(JSON.stringify(messages));
-            let res = await this.agent.prompter.promptCoding(messages_copy);
-            if (this.agent.bot.interrupt_code)
+
+            let systemPrompt = `
+You are Dingbat writing executable JavaScript for a Minecraft Mindcraft bot built on Mineflayer.
+
+You MUST:
+- Return exactly ONE JavaScript code block using triple backticks
+- Do NOT include any text before or after the code block
+- Do NOT explain anything
+- Only output runnable code
+- Output only the BODY of the action code
+- Do NOT write export statements
+- Do NOT define function main(...)
+- Do NOT wrap code in async functions
+- The runtime already provides the execution wrapper
+
+You have access to:
+- skills.*
+- world.*
+- Vec3
+- bot
+
+CRITICAL API RULES:
+- You may ONLY call functions that actually exist in the provided skill and world docs
+- Do NOT invent helpers such as skills.findAndCraft
+- If a helper does not exist, combine existing skills.* calls instead
+- Prefer existing skills.* helpers over raw custom logic
+- If you are unsure whether a function exists, do not use it
+
+GENERAL RULES:
+- Prefer safe, incremental actions over ambitious plans
+- Observe the environment and inventory before acting
+- If pathfinding or movement helpers already exist, use them instead of reinventing movement
+- If a task requires placement, first ensure there is a safe place to stand and place blocks
+
+SURVIVAL RULES:
+- If the bot is in a dangerous or unstable position, stabilize first
+- Do NOT attempt crafting or building if there is no safe place to stand or place blocks
+- If descending is unsafe, create a safe platform first
+- Avoid falls, lava, drowning, suffocation, and unnecessary combat
+- Do not break support blocks unless a safe landing or escape path exists
+
+TASK RULES:
+- For multi-step tasks, do the smallest safe next step that makes progress
+- If a crafting table or other workstation is required, first create or reach a safe working area
+- If the task cannot be completed safely, write code that stabilizes the bot and logs the blocker
+
+STORAGE RULES:
+- To stash excess inventory in a chest, prefer skills.stashInventoryInNearbyChest(bot).
+- Do NOT invent chest helpers like skills.takeFromInventory, skills.depositIntoChest, or world.findNearestEntityByName.
+- Do NOT manipulate chest storage manually if a high-level stash helper already exists.
+- If asked to empty or stash inventory, use skills.stashInventoryInNearbyChest(bot) directly.
+
+CRAFTING AND EQUIPMENT RULES:
+- To obtain materials before crafting, prefer skills.ensureItem(bot, "item_name", count) when available.
+- Use skills.craftRecipe(bot, "item_name", count) to craft items.
+- Do NOT pass ingredient arrays or recipe grids to skills.craftRecipe.
+- Use skills.equip(bot, "item_name") to equip armor, tools, weapons, or shields.
+- Do NOT pass slot numbers to skills.equip.
+- skills.craftRecipe may automatically use or place a crafting table if needed.
+- For armor tasks, prefer high-level armor helpers if they exist.
+- A full armor set is helmet, chestplate, leggings, and boots.
+- Diamond armor requires 24 diamonds total.
+- Netherite armor requires diamond armor pieces plus netherite ingots.
+
+RESOURCE ACQUISITION RULES:
+- To obtain materials before crafting, prefer skills.ensureItem(bot, "item_name", count) when available.
+- Before crafting, check whether required materials are already in inventory.
+- If materials are missing, gather them before attempting to craft.
+- Prefer high-level gathering helpers when available.
+- For armor tasks, if the bot lacks enough materials, gather the required materials first, then craft and equip.
+- For diamond armor, 24 diamonds are required.
+- Use existing movement, mining, and navigation helpers instead of inventing new pathfinding APIs.
+- In this project, prefer existing Mindcraft skills and Ashfinder-compatible helpers when available.
+
+$CODE_DOCS
+
+Always produce valid working code. No exceptions.
+
+Example format:
+\`\`\`javascript
+await skills.goToSurface(bot);
+\`\`\`
+`;
+
+            systemPrompt = await this.agent.prompter.replaceStrings(systemPrompt, messages_copy, this.agent.prompter.coding_examples);
+
+            let res = await this.agent.prompter.code_model.sendRequest(messages_copy, systemPrompt);
+            res = String(res || '').trim();
+
+            if (this.agent.bot.interrupt_code) {
                 return null;
-            let contains_code = res.indexOf('```') !== -1;
+            }
+
+            const contains_code = res.includes('```');
+
             if (!contains_code) {
-                if (res.indexOf('!newAction') !== -1) {
+                if (res.includes('!newAction')) {
                     messages.push({
-                        role: 'assistant', 
+                        role: 'assistant',
                         content: res.substring(0, res.indexOf('!newAction'))
                     });
-                    continue; // using newaction will continue the loop
+                    continue;
                 }
-                
+
                 if (no_code_failures >= MAX_NO_CODE) {
-                    console.warn("Action failed, agent would not write code.");
+                    console.warn('Action failed, agent would not write code.');
                     return 'Action failed, agent would not write code.';
                 }
+
                 messages.push({
-                    role: 'system', 
-                    content: 'Error: no code provided. Write code in codeblock in your response. ``` // example ```'}
-                );
-                console.warn("No code block generated. Trying again.");
+                    role: 'system',
+                    content: 'Error: no code provided. Return exactly one JavaScript code block using triple backticks and nothing else.'
+                });
+
+                console.warn('No code block generated. Trying again.');
                 no_code_failures++;
                 continue;
             }
-            code = res.substring(res.indexOf('```')+3, res.lastIndexOf('```'));
+
+            code = res.substring(res.indexOf('```') + 3, res.lastIndexOf('```')).trim();
+
+            if (code.toLowerCase().startsWith('javascript')) {
+                code = code.substring('javascript'.length).trim();
+            } else if (code.toLowerCase().startsWith('js')) {
+                code = code.substring('js'.length).trim();
+            }
+
             const result = await this._stageCode(code);
             const executionModule = result.func;
             const lintResult = await this._lintCode(result.src_lint_copy);
+
             if (lintResult) {
-                const message = 'Error: Code lint error:'+'\n'+lintResult+'\nPlease try again.';
-                console.warn("Linting error:"+'\n'+lintResult+'\n');
+                const message = 'Error: Code lint error:\n' + lintResult + '\nPlease try again.';
+                console.warn('Linting error:\n' + lintResult + '\n');
                 messages.push({ role: 'system', content: message });
                 continue;
             }
+
             if (!executionModule) {
-                console.warn("Failed to stage code, something is wrong.");
+                console.warn('Failed to stage code, something is wrong.');
                 return 'Failed to stage code, something is wrong.';
             }
 
@@ -85,12 +278,13 @@ export class Coder {
                 await executionModule.main(this.agent.bot);
 
                 const code_output = this.agent.actions.getBotOutputSummary();
-                const summary = "Agent wrote this code: \n```" + this._sanitizeCode(code) + "```\nCode Output:\n" + code_output;
+                const summary = "Agent wrote this code:\n```" + this._sanitizeCode(code) + "```\nCode Output:\n" + code_output;
                 return summary;
             } catch (e) {
-                if (this.agent.bot.interrupt_code)
+                if (this.agent.bot.interrupt_code) {
                     return null;
-                
+                }
+
                 console.warn('Generated code threw error: ' + e.toString());
                 console.warn('trying again...');
 
@@ -100,12 +294,18 @@ export class Coder {
                     role: 'assistant',
                     content: res
                 });
+
                 messages.push({
                     role: 'system',
-                    content: `Code Output:\n${code_output}\nCODE EXECUTION THREW ERROR: ${e.toString()}\n Please try again:`
+                    content:
+                        'The previous code failed.\n' +
+                        'Error: ' + e.toString() + '\n' +
+                        'Code output:\n' + code_output + '\n' +
+                        'Return exactly one corrected JavaScript code block and nothing else.'
                 });
             }
         }
+
         return `Code generation failed after ${MAX_ATTEMPTS} attempts.`;
     }
     
@@ -119,15 +319,72 @@ export class Coder {
             skills.push(match[1]);
         }
         const allDocs = await this.agent.prompter.skill_libary.getAllSkillDocs();
-        const knownSkills = new Set(allDocs.map(doc => doc.split('\n')[0]));
-        const missingSkills = skills.filter(skill => !knownSkills.has(skill));
+        const docList = Array.isArray(allDocs) ? allDocs : [String(allDocs || '')];
+
+        const knownSkills = docList
+            .map(doc => String(doc).split('\n')[0].trim())
+            .filter(Boolean);
+
+        const knownSkillSet = new Set(knownSkills);
+
+        const missingSkills = skills.filter(skill => !knownSkillSet.has(skill));
+
+        function nearestMatches(target, options, limit = 5) {
+            const t = target.toLowerCase();
+
+            const scored = options.map(option => {
+                const o = option.toLowerCase();
+
+                let score = 0;
+                if (o === t) score += 100;
+                if (o.includes(t) || t.includes(o)) score += 50;
+
+                const targetParts = t.split('.');
+                const optionParts = o.split('.');
+                const targetName = targetParts[targetParts.length - 1];
+                const optionName = optionParts[optionParts.length - 1];
+
+                if (optionName === targetName) score += 40;
+                if (optionName.includes(targetName) || targetName.includes(optionName)) score += 20;
+
+                let overlap = 0;
+                for (const ch of targetName) {
+                    if (optionName.includes(ch)) overlap++;
+                }
+                score += overlap;
+
+                return { option, score };
+            });
+
+            return scored
+                .sort((a, b) => b.score - a.score)
+                .slice(0, limit)
+                .map(x => x.option);
+        }
+
         if (missingSkills.length > 0) {
             result += 'These functions do not exist:\n';
             result += missingSkills.join('\n');
-            console.log(result)
+
+            result += '\n\nClosest valid functions:\n';
+            for (const missing of missingSkills) {
+                const suggestions = nearestMatches(missing, knownSkills, 3);
+                result += `${missing} -> ${suggestions.join(', ')}\n`;
+            }
+
+            console.log(result);
             return result;
         }
-
+		
+        // Only reject explicit export statements in generated code.
+        // Do not reject "main(...)" here because the lint template itself may contain that wrapper.
+        if (/\bexport\s+/.test(codeNoComments)) {
+            result += "#ERROR 1\n";
+            result += "Message: Do not use export statements in generated action code.\n";
+            result += "The code contains exceptions and cannot continue execution.";
+            return result;
+        }
+		
         const eslint = new ESLint();
         const results = await eslint.lintText(code);
         const codeLines = code.split('\n');
@@ -187,6 +444,7 @@ export class Coder {
             log: skills.log,
             world,
             Vec3,
+            agent: this.agent
         });
         const mainFn = compartment.evaluate(src);
         

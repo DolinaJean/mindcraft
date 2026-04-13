@@ -1,3 +1,5 @@
+// ./src/mindcraft/mindcraft.js
+// starts MindServer, creates agent processes, assigns each one a viewer port, and starts/restarts/stops agents. It is the process manager, not the renderer.
 import { createMindServer, registerAgent, numStateListeners } from './mindserver.js';
 import { AgentProcess } from '../process/agent_process.js';
 import { getServer } from './mcserver.js';

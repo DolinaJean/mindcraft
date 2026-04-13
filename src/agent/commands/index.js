@@ -1,3 +1,5 @@
+// ./src/agent/commands/index.js
+// The agent imports and uses 'commandExists, etc' inside handleMessage().
 import { getBlockId, getItemId } from "../../utils/mcdata.js";
 import { actionsList } from './actions.js';
 import { queryList } from './queries.js';

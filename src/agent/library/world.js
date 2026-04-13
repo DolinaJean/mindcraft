@@ -1,5 +1,8 @@
-import pf from 'mineflayer-pathfinder';
 import * as mc from '../../utils/mcdata.js';
+
+//import baritone from "@miner-org/mineflayer-baritone";
+//const pathfinder = baritone.loader;
+//const goals = baritone.goals;
 
 
 export function getNearestFreeSpace(bot, size=1, distance=8) {
@@ -388,19 +391,15 @@ export function getNearbyBlockTypes(bot, distance=16) {
 }
 
 export async function isClearPath(bot, target) {
-    /**
-     * Check if there is a path to the target that requires no digging or placing blocks.
-     * @param {Bot} bot - The bot to get the path for.
-     * @param {Entity} target - The target to path to.
-     * @returns {boolean} - True if there is a clear path, false otherwise.
-     */
-    let movements = new pf.Movements(bot)
-    movements.canDig = false;
-    movements.canPlaceOn = false;
-    movements.canOpenDoors = false;
-    let goal = new pf.goals.GoalNear(target.position.x, target.position.y, target.position.z, 1);
-    let path = await bot.pathfinder.getPathTo(movements, goal, 100);
-    return path.status === 'success';
+    const nav = bot.ashfinder || bot.baritone;
+    if (!nav || !nav.api) return true; 
+
+    const { GoalNear } = nav.api.goals;
+    const goal = new GoalNear(target.position.x, target.position.y, target.position.z, 1);
+    
+    // In Baritone, getPathTo is usually part of the API instance
+    const path = await nav.api.getPathTo(goal);
+    return path && path.status === 'success';
 }
 
 export function shouldPlaceTorch(bot) {

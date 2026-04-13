@@ -1,3 +1,5 @@
+// ./src/mindcraft/mindserver.js
+// is the real UI backend. It serves the static public files, accepts Socket.IO connections from the browser, tracks agent sockets, and every second asks each in-game agent for get-full-state, then broadcasts the combined result as state-update.
 import { Server } from 'socket.io';
 import express from 'express';
 import http from 'http';

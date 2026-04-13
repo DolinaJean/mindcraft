@@ -11,7 +11,6 @@ import { EventEmitter } from 'events';
 import worker_threads from 'worker_threads';
 global.Worker = worker_threads.Worker;
 
-
 export class Camera extends EventEmitter {
     constructor (bot, fp) {
         super();
@@ -25,23 +24,54 @@ export class Camera extends EventEmitter {
         this.viewer = new Viewer(this.renderer);
         this._init().then(() => {
             this.emit('ready');
-        })
+        });
     }
   
     async _init () {
-        const botPos = this.bot.entity.position;
-        const center = new Vec3(botPos.x, botPos.y+this.bot.entity.height, botPos.z);
-        this.viewer.setVersion(this.bot.version);
-        // Load world
-        const worldView = new WorldView(this.bot.world, this.viewDistance, center);
-        this.viewer.listen(worldView);
-        worldView.listenToBot(this.bot);
-        await worldView.init(center);
-        this.worldView = worldView;
+        if (!this.bot || !this.bot.entity) return;
+
+        try {
+            const botPos = this.bot.entity.position;
+            const center = new Vec3(botPos.x, botPos.y + this.bot.entity.height, botPos.z);
+            
+            this.viewer.setVersion(this.bot.version);
+
+            if (this.viewer.entities) {
+                this.viewer.entities.update = (entity) => {
+                    try {
+                        if (!this.viewer.scene || !entity) return;
+                        const entityId = entity.id;
+                        if (this.viewer.entities.entities[entityId]) {
+                            // Logic removed to prevent 1.21.11 entity crashes
+                        }
+                    } catch (err) { /* ignore */ }
+                };
+            }
+
+            const worldView = new WorldView(this.bot.world, this.viewDistance, center);
+            
+            const originalEmit = worldView.emit.bind(worldView);
+            worldView.emit = (event, ...args) => {
+                if (event === 'entitySpawn') return; 
+                try {
+                    return originalEmit(event, ...args);
+                } catch (err) {
+                    return;
+                }
+            };
+
+            this.viewer.listen(worldView);
+            worldView.listenToBot(this.bot);
+            await worldView.init(center);
+            this.worldView = worldView;
+            console.log('[camera.js] 1.21.11 Deep Shield Active');
+        } catch (err) {
+            console.error('[camera.js] Initialization error:', err);
+        }
     }
   
     async capture() {
-        const center = new Vec3(this.bot.entity.position.x, this.bot.entity.position.y+this.bot.entity.height, this.bot.entity.position.z);
+        const center = new Vec3(this.bot.entity.position.x, this.bot.entity.position.y + this.bot.entity.height, this.bot.entity.position.z);
         this.viewer.camera.position.set(center.x, center.y, center.z);
         await this.worldView.updatePosition(center);
         this.viewer.setFirstPersonCamera(this.bot.entity.position, this.bot.entity.yaw, this.bot.entity.pitch);
@@ -60,19 +90,14 @@ export class Camera extends EventEmitter {
         const buf = await getBufferFromStream(imageStream);
         await this._ensureScreenshotDirectory();
         await fs.writeFile(`${this.fp}/${filename}.jpg`, buf);
-        console.log('saved', filename);
         return filename;
     }
 
     async _ensureScreenshotDirectory() {
-        let stats;
         try {
-            stats = await fs.stat(this.fp);
-        } catch (e) {
-            if (!stats?.isDirectory()) {
-                await fs.mkdir(this.fp);
-            }
+            await fs.access(this.fp);
+        } catch (err) {
+            await fs.mkdir(this.fp, { recursive: true });
         }
     }
 }
-  

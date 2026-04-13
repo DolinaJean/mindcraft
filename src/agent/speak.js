@@ -1,150 +1,97 @@
-import { exec, spawn } from 'child_process';
-import { promises as fs } from 'fs';
-import os from 'os';
-import path from 'path';
-import { TTSConfig as gptTTSConfig } from '../models/gpt.js';
-import { TTSConfig as geminiTTSConfig } from '../models/gemini.js';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
-let speakingQueue = []; // each item: {text, model, audioData, ready}
-let isSpeaking = false;
+const execFileAsync = promisify(execFile);
 
-export function speak(text, speak_model) {
-    const model = speak_model || 'system';
-
-    const item = { text, model, audioData: null, ready: null };
-
-    if (model === 'system') {
-        // no preprocessing needed
-        item.ready = Promise.resolve();
-    } else {
-    item.ready = fetchRemoteAudio(text, model)
-        .then(data => { item.audioData = data; })
-        .catch(err => { item.error = err; });
-    }
-
-    speakingQueue.push(item);
-    if (!isSpeaking) processQueue();
+function sanitizeForSpeech(text) {
+    return String(text ?? '')
+        .replace(/```[\s\S]*?```/g, ' code block omitted ')
+        .replace(/`([^`]*)`/g, '$1')
+        .replace(/[\r\n]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
 }
 
-async function fetchRemoteAudio(txt, model) {
-    function getModelUrl(prov) {
-        if (prov === 'openai') return gptTTSConfig.baseUrl;
-        if (prov === 'google') return geminiTTSConfig.baseUrl;
-        return 'https://api.openai.com/v1';
-    }
+function clampRate(rate) {
+    if (typeof rate !== 'number' || Number.isNaN(rate)) return 0;
+    return Math.max(-10, Math.min(10, Math.trunc(rate)));
+}
 
-    let prov, mdl, voice, url;
-    if (typeof model === 'string') {
-        [prov, mdl, voice] = model.split('/');
-        url = getModelUrl(prov);
-    } else {
-        prov = model.api;
-        mdl = model.model;
-        voice = model.voice;
-        url = model.url || getModelUrl(prov);
-    }
-
-    if (prov === 'openai') {
-        return gptTTSConfig.sendAudioRequest(txt, mdl, voice, url);
-    } else if (prov === 'google') {
-        return geminiTTSConfig.sendAudioRequest(txt, mdl, voice, url);
-    }
-    else {
-        throw new Error(`TTS Provider ${prov} is not supported.`);
+function getRateForVoiceModel(speakModel) {
+    switch ((speakModel || '').toLowerCase()) {
+        case 'fast':
+            return 3;
+        case 'slow':
+            return -2;
+        case 'system':
+        default:
+            return 0;
     }
 }
 
-async function processQueue() {
-    isSpeaking = true;
-    if (speakingQueue.length === 0) {
-        isSpeaking = false;
-        return;
-    }
-    const item = speakingQueue.shift();
-    const { text: txt, model, audioData } = item;
-    if (txt.trim() === '') {
-        isSpeaking = false;
-        processQueue();
-        return;
-    }
+async function speakWindows(text, rate) {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mindcraft-tts-'));
+    const textPath = path.join(tempDir, 'speech.txt');
+    const scriptPath = path.join(tempDir, 'speak.ps1');
 
-    const isWin = process.platform === 'win32';
-    const isMac = process.platform === 'darwin';
-
-    // wait for preprocessing if needed
     try {
-        await item.ready;
-        if (item.error) throw item.error;
-    } catch (err) {
-        console.error('[TTS] preprocess error', err);
-        isSpeaking = false;
-        processQueue();
-        return;
-    }
+        await fs.writeFile(textPath, text, 'utf8');
 
-    if (model === 'system') {
-        // system TTS
-        const cmd = isWin
-            ? `powershell -NoProfile -Command "Add-Type -AssemblyName System.Speech; \
-            $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Rate=2; \
-            $s.Speak('${txt.replace(/'/g,"''")}'); $s.Dispose()"`
-            : isMac
-            ? `say "${txt.replace(/"/g,'\\"')}"`
-            : `espeak "${txt.replace(/"/g,'\\"')}"`;
+        const script = `
+Add-Type -AssemblyName System.Speech
+$ErrorActionPreference = 'Stop'
+$textPath = $args[0]
+$rate = [int]$args[1]
+$text = Get-Content -LiteralPath $textPath -Raw -Encoding UTF8
+if ([string]::IsNullOrWhiteSpace($text)) { exit 0 }
+$s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+try {
+    $s.Rate = $rate
+    $s.Speak($text)
+}
+finally {
+    $s.Dispose()
+}
+`.trim();
 
-        exec(cmd, err => {
-            if (err) console.error('TTS error', err);
-            isSpeaking = false;
-            processQueue();
+        await fs.writeFile(scriptPath, script, 'utf8');
+
+        await execFileAsync('powershell', [
+            '-NoProfile',
+            '-ExecutionPolicy', 'Bypass',
+            '-File', scriptPath,
+            textPath,
+            String(rate)
+        ], {
+            windowsHide: true,
+            timeout: 120000,
+            maxBuffer: 1024 * 1024
         });
+    } finally {
+        await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+}
 
-    } 
-    else {
-        // audioData was already fetched in speak()
-        const audioData = item.audioData;
+export async function speak(text, speakModel = 'system') {
+    const cleaned = sanitizeForSpeech(text);
+    if (!cleaned) return;
 
-        if (!audioData) {
-            console.error('[TTS] No audio data ready');
-            isSpeaking = false;
-            processQueue();
+    const rate = clampRate(getRateForVoiceModel(speakModel));
+
+    try {
+        if (process.platform === 'win32') {
+            await speakWindows(cleaned, rate);
             return;
         }
 
-        try {
-            if (isWin) {
-                const tmpPath = path.join(os.tmpdir(), `tts_${Date.now()}.mp3`);
-                await fs.writeFile(tmpPath, Buffer.from(audioData, 'base64'));
-
-                const player = spawn('ffplay', ['-nodisp', '-autoexit', '-loglevel', 'quiet', tmpPath], {
-                    stdio: 'ignore', windowsHide: true
-                });
-                player.on('error', async (err) => {
-                    console.error('[TTS] ffplay error', err);
-                    try { await fs.unlink(tmpPath); } catch {}
-                    isSpeaking = false;
-                    processQueue();
-                });
-                player.on('exit', async () => {
-                    try { await fs.unlink(tmpPath); } catch {}
-                    isSpeaking = false;
-                    processQueue();
-                });
-
-            } else {
-                const player = spawn('ffplay', ['-nodisp','-autoexit','pipe:0'], {
-                    stdio: ['pipe','ignore','ignore']
-                });
-                player.stdin.write(Buffer.from(audioData, 'base64'));
-                player.stdin.end();
-                player.on('exit', () => {
-                    isSpeaking = false;
-                    processQueue();
-                });
-            }
-        } catch (e) {
-            console.error('[TTS] Audio error', e);
-            isSpeaking = false;
-            processQueue();
-        }
+        // Non-Windows fallback: no-op for now to avoid crashing the bot.
+        console.warn('TTS is only implemented for Windows in this module.');
+    } catch (err) {
+        console.error('TTS error', err);
     }
 }
+
+export default speak;

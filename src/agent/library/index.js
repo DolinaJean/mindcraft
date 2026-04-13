@@ -1,23 +1,28 @@
+// ./src/agent/library/index.js
+
 import * as skills from './skills.js';
 import * as world from './world.js';
 
+function docsFromModule(moduleObj, moduleName) {
+    const docs = [];
 
-export function docHelper(functions, module_name) {
-    let docArray = [];
-    for (let skillFunc of functions) {
-        let str = skillFunc.toString();
-        if (str.includes('/**')) {
-            let docEntry = `${module_name}.${skillFunc.name}\n`;
-            docEntry += str.substring(str.indexOf('/**') + 3, str.indexOf('**/')).trim();
-            docArray.push(docEntry);
+    for (const [name, value] of Object.entries(moduleObj)) {
+        if (typeof value !== 'function') continue;
+
+        const docKey = `${name}Doc`;
+        const explicitDoc = moduleObj[docKey];
+
+        if (typeof explicitDoc === 'string' && explicitDoc.trim()) {
+            docs.push(`${moduleName}.${name}\n${explicitDoc.trim()}`);
         }
     }
-    return docArray;
+
+    return docs;
 }
 
 export function getSkillDocs() {
     let docArray = [];
-    docArray = docArray.concat(docHelper(Object.values(skills), 'skills'));
-    docArray = docArray.concat(docHelper(Object.values(world), 'world'));
+    docArray = docArray.concat(docsFromModule(skills, 'skills'));
+    docArray = docArray.concat(docsFromModule(world, 'world'));
     return docArray;
 }

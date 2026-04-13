@@ -1,3 +1,5 @@
+// ./src/models/_model_map.js
+
 import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
@@ -11,12 +13,17 @@ const apiMap = await (async () => {
     const map = {};
     const files = (await fs.readdir(__dirname))
         .filter(f => f.endsWith('.js') && f !== '_model_map.js' && f !== 'prompter.js');
+
     for (const file of files) {
         try {
             const moduleUrl = pathToFileURL(path.join(__dirname, file)).href;
             const mod = await import(moduleUrl);
+
             for (const exported of Object.values(mod)) {
-                if (typeof exported === 'function' && Object.prototype.hasOwnProperty.call(exported, 'prefix')) {
+                if (
+                    typeof exported === 'function' &&
+                    Object.prototype.hasOwnProperty.call(exported, 'prefix')
+                ) {
                     const prefix = exported.prefix;
                     if (typeof prefix === 'string' && prefix.length > 0) {
                         map[prefix] = exported;
@@ -27,63 +34,109 @@ const apiMap = await (async () => {
             console.warn('Failed to load model module:', file, e?.message || e);
         }
     }
+
     return map;
 })();
 
 export function selectAPI(profile) {
-    if (typeof profile === 'string' || profile instanceof String) {
-        profile = {model: profile};
+    if (!profile) {
+        throw new Error('selectAPI received undefined profile');
     }
-    // backwards compatibility with local->ollama
+
+    if (typeof profile === 'string' || profile instanceof String) {
+        profile = { model: profile };
+    }
+
+    // backwards compatibility with local -> ollama
     if (profile.api?.includes('local') || profile.model?.includes('local')) {
         profile.api = 'ollama';
         if (profile.model) {
             profile.model = profile.model.replace('local', 'ollama');
         }
     }
+
     if (!profile.api) {
         const api = Object.keys(apiMap).find(key => profile.model?.startsWith(key));
+
         if (api) {
             profile.api = api;
-        }
-        else {
-            // check for some common models that do not require prefixes
-            if (profile.model.includes('gpt') || profile.model.includes('o1')|| profile.model.includes('o3'))
+        } else {
+            // common models that do not require prefixes
+            if (profile.model?.includes('gpt') || profile.model?.includes('o1') || profile.model?.includes('o3')) {
                 profile.api = 'openai';
-            else if (profile.model.includes('claude'))
+            } else if (profile.model?.includes('claude')) {
                 profile.api = 'anthropic';
-            else if (profile.model.includes('gemini'))
-                profile.api = "google";
-            else if (profile.model.includes('grok'))
+            } else if (profile.model?.includes('gemini')) {
+                profile.api = 'google';
+            } else if (profile.model?.includes('grok')) {
                 profile.api = 'xai';
-            else if (profile.model.includes('mistral'))
+            } else if (profile.model?.includes('mistral')) {
                 profile.api = 'mistral';
-            else if (profile.model.includes('deepseek'))
+            } else if (profile.model?.includes('deepseek')) {
                 profile.api = 'deepseek';
-            else if (profile.model.includes('qwen'))
+            } else if (profile.model?.includes('qwen')) {
                 profile.api = 'qwen';
+            } else if (profile.model?.includes('ollama')) {
+                profile.api = 'ollama';
+            }
         }
+
         if (!profile.api) {
-            throw new Error('Unknown model:', profile.model);
+            throw new Error(`Unknown model: ${profile.model}`);
         }
     }
+
     if (!apiMap[profile.api]) {
-        throw new Error('Unknown api:', profile.api);
+        throw new Error(`Unknown api: ${profile.api}`);
     }
-    let model_name = profile.model.replace(profile.api + '/', ''); // remove prefix
-    profile.model = model_name === "" ? null : model_name; // if model is empty, set to null
+
+    if (profile.model) {
+        const modelName = profile.model.replace(profile.api + '/', '');
+        profile.model = modelName === '' ? null : modelName;
+    }
+
     return profile;
 }
 
 export function createModel(profile) {
+    if (!profile) {
+        throw new Error('createModel received undefined profile');
+    }
+
     if (!!apiMap[profile.model]) {
-        // if the model value is an api (instead of a specific model name)
-        // then set model to null so it uses the default model for that api
+        // if the model value is an api instead of a specific model name,
+        // set model to null so it uses the default model for that api
         profile.model = null;
     }
+
     if (!apiMap[profile.api]) {
-        throw new Error('Unknown api:', profile.api);
+        throw new Error(`Unknown api: ${profile.api}`);
     }
-    const model = new apiMap[profile.api](profile.model, profile.url, profile.params);
-    return model;
+
+    return new apiMap[profile.api](profile.model, profile.url, profile.params);
+}
+
+export function createModelForRole(profile, role = 'planner') {
+    const roleKeyMap = {
+        planner: 'planner_model',
+        executor: 'executor_model',
+        coder: 'code_model',
+        memory: 'memory_model',
+        triage: 'triage_model',
+        embed: 'embedding_model',
+        vision: 'vision_model'
+    };
+
+    const selectedModel =
+        profile?.[roleKeyMap[role]] ||
+        profile?.model ||
+        profile?.code_model;
+
+    const derivedProfile = {
+        ...profile,
+        model: selectedModel
+    };
+
+    const selectedProfile = selectAPI(derivedProfile);
+    return createModel(selectedProfile);
 }

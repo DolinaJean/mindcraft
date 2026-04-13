@@ -1,9 +1,10 @@
+// ./src/models/prompter.js 
+
 import { readFileSync, mkdirSync, writeFileSync} from 'fs';
 import { Examples } from '../utils/examples.js';
-import { getCommandDocs } from '../agent/commands/index.js';
+import { getCommandDocs, getCommand, containsCommand, truncCommandMessage } from '../agent/commands/index.js';
 import { SkillLibrary } from "../agent/library/skill_library.js";
 import { stringifyTurns } from '../utils/text.js';
-import { getCommand } from '../agent/commands/index.js';
 import settings from '../agent/settings.js';
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -55,16 +56,33 @@ export class Prompter {
         if (this.profile.max_tokens)
             max_tokens = this.profile.max_tokens;
 
-        let chat_model_profile = selectAPI(this.profile.model);
-        this.chat_model = createModel(chat_model_profile);
+		let primary_model = this.profile.planner_model || this.profile.model || this.profile.code_model;
+		let chat_model_profile = selectAPI(primary_model);
+		this.chat_model = createModel(chat_model_profile);
 
-        if (this.profile.code_model) {
-            let code_model_profile = selectAPI(this.profile.code_model);
-            this.code_model = createModel(code_model_profile);
-        }
-        else {
-            this.code_model = this.chat_model;
-        }
+		if (this.profile.triage_model) {
+			let triage_model_profile = selectAPI(this.profile.triage_model);
+			this.triage_model = createModel(triage_model_profile);
+		}
+		else {
+			this.triage_model = this.chat_model;
+		}
+
+		if (this.profile.memory_model) {
+			let memory_model_profile = selectAPI(this.profile.memory_model);
+			this.memory_model = createModel(memory_model_profile);
+		}
+		else {
+			this.memory_model = this.chat_model;
+		}
+
+		if (this.profile.code_model) {
+			let code_model_profile = selectAPI(this.profile.code_model);
+			this.code_model = createModel(code_model_profile);
+		}
+		else {
+			this.code_model = this.chat_model;
+		}
 
         if (this.profile.vision_model) {
             let vision_model_profile = selectAPI(this.profile.vision_model);
@@ -98,6 +116,44 @@ export class Prompter {
             }
             console.log("Copy profile saved.");
         });
+    }
+
+	isActionRequest(message) {
+		if (!message || typeof message !== 'string') return false;
+
+		const text = message.toLowerCase().trim();
+
+        // Do not treat restart/status messages as action requests
+        if (
+            text.includes('agent process restarted') ||
+            text.includes('restarted') ||
+            text.includes('respawned')
+        ) {
+            return false;
+        }
+
+		const priorityKeywords = [
+			'bed', 'sleep', 'phantom', 'zombie', 'skeleton', 'creeper',
+			'craft', 'make', 'build', 'mine', 'dig', 'collect', 'gather',
+			'move', 'go to', 'goto', 'walk', 'come here', 'follow',
+			'place', 'break', 'attack', 'kill', 'fight', 'hunt',
+			'smelt', 'cook', 'equip', 'drop', 'give', 'store',
+			'farm', 'harvest', 'plant', 'torch', 'surface', 'stop'
+		];
+
+		return priorityKeywords.some(keyword => text.includes(keyword));
+	}
+	
+    async prompt(messages) {
+        const lastMessage = messages?.[messages.length - 1]?.content || '';
+
+        if (this.isActionRequest(lastMessage)) {
+            console.log('Routing to CODE model (Andy)');
+            return await this.promptCoding(messages);
+        }
+
+        console.log('Routing to CHAT model (Qwen)');
+        return await this.promptConvo(messages);
     }
 
     getName() {
@@ -152,13 +208,29 @@ export class Prompter {
         if (prompt.includes('$COMMAND_DOCS'))
             prompt = prompt.replaceAll('$COMMAND_DOCS', getCommandDocs(this.agent));
         if (prompt.includes('$CODE_DOCS')) {
-            const code_task_content = messages.slice().reverse().find(msg =>
-                msg.role !== 'system' && msg.content.includes('!newAction(')
+            const code_task_content = messages?.slice().reverse().find(msg =>
+                msg.role !== 'system' && typeof msg.content === 'string' && msg.content.includes('!newAction(')
             )?.content?.match(/!newAction\((.*?)\)/)?.[1] || '';
+
+            const relevantDocs = await this.skill_libary.getRelevantSkillDocs(
+                code_task_content,
+                settings.relevant_docs_count
+            );
+
+            const allDocs = await this.skill_libary.getAllSkillDocs();
+
+            const formattedAllDocs = Array.isArray(allDocs) ? allDocs.join('\n\n') : String(allDocs || '');
+            const formattedRelevantDocs = Array.isArray(relevantDocs) ? relevantDocs.join('\n\n') : String(relevantDocs || '');
 
             prompt = prompt.replaceAll(
                 '$CODE_DOCS',
-                await this.skill_libary.getRelevantSkillDocs(code_task_content, settings.relevant_docs_count)
+                [
+                    'AVAILABLE SKILLS (YOU MAY ONLY USE THESE FUNCTIONS):',
+                    formattedAllDocs,
+                    '',
+                    'MOST RELEVANT SKILLS FOR THIS TASK:',
+                    formattedRelevantDocs
+                ].join('\n')
             );
         }
         if (prompt.includes('$EXAMPLES') && examples !== null)
@@ -209,8 +281,8 @@ export class Prompter {
         }
         this.last_prompt_time = Date.now();
     }
-
-    async promptConvo(messages) {
+	
+	    async promptConvo(messages) {
         this.most_recent_msg_time = Date.now();
         let current_msg_time = this.most_recent_msg_time;
 
@@ -238,7 +310,6 @@ export class Prompter {
                 continue;
             }
 
-            // Check for hallucination or invalid output
             if (generation?.includes('(FROM OTHER BOT)')) {
                 console.warn('LLM hallucinated message as another bot. Trying again...');
                 continue;
@@ -250,54 +321,101 @@ export class Prompter {
             }
 
             if (generation?.includes('</think>')) {
-                const [_, afterThink] = generation.split('</think>')
-                generation = afterThink
+                const [_, afterThink] = generation.split('</think>');
+                generation = afterThink;
             }
+
+            // Conversation replies must not emit commands.
+            // Strip out any command-like output before returning chat text.
+            generation = String(generation || '')
+                .replace(/!\w+\([^)]*\)/g, '')
+                .replace(/!\w+/g, '')
+                .trim();
 
             return generation;
         }
 
         return '';
     }
+	
+async promptCoding(messages) {
+    if (this.awaiting_coding) {
+        console.warn('Already awaiting coding response, sending thinking message.');
+        return 'Hold on. I am thinking.';
+    }
 
-    async promptCoding(messages) {
-        if (this.awaiting_coding) {
-            console.warn('Already awaiting coding response, returning no response.');
-            return '```//no response```';
-        }
-        this.awaiting_coding = true;
+    this.awaiting_coding = true;
+
+    try {
         await this.checkCooldown();
+
         let prompt = this.profile.coding;
         prompt = await this.replaceStrings(prompt, messages, this.coding_examples);
 
         let resp = await this.code_model.sendRequest(messages, prompt);
-        this.awaiting_coding = false;
+        resp = String(resp || '').trim();
+
+        // In command mode, fenced code is invalid.
+        if (resp.includes('```')) {
+            await this._saveLog(prompt, messages, resp, 'coding_invalid_codeblock');
+            return '!stop';
+        }
+
+        // Only keep the first non-empty line.
+        const firstLine = resp
+            .split('\n')
+            .map(line => line.trim())
+            .find(line => line.length > 0) || '';
+
+        resp = firstLine;
+
+        // Must begin with a command.
+        if (!resp.startsWith('!')) {
+            await this._saveLog(prompt, messages, resp, 'coding_invalid_noncommand');
+            return '!stop';
+        }
+
+        // Truncate to a single command if the model added extra text after it.
+        const commandName = containsCommand(resp);
+        if (!commandName) {
+            await this._saveLog(prompt, messages, resp, 'coding_invalid_unknown');
+            return '!stop';
+        }
+
+        resp = truncCommandMessage(resp).trim();
+
         await this._saveLog(prompt, messages, resp, 'coding');
         return resp;
+    } catch (err) {
+        console.error('Coding prompt failed:', err);
+        return '!stop';
+    } finally {
+        this.awaiting_coding = false;
     }
+}
 
-    async promptMemSaving(to_summarize) {
-        await this.checkCooldown();
-        let prompt = this.profile.saving_memory;
-        prompt = await this.replaceStrings(prompt, null, null, to_summarize);
-        let resp = await this.chat_model.sendRequest([], prompt);
-        await this._saveLog(prompt, to_summarize, resp, 'memSaving');
-        if (resp?.includes('</think>')) {
-            const [_, afterThink] = resp.split('</think>')
-            resp = afterThink;
-        }
-        return resp;
-    }
+	async promptMemSaving(to_summarize) {
+		await this.checkCooldown();
+		let prompt = this.profile.saving_memory;
+		prompt = await this.replaceStrings(prompt, null, null, to_summarize);
+		let resp = await this.memory_model.sendRequest([], prompt);
+		await this._saveLog(prompt, to_summarize, resp, 'memSaving');
+		if (resp?.includes('</think>')) {
+			const [_, afterThink] = resp.split('</think>');
+			resp = afterThink;
+		}
+		return resp;
+	}
 
-    async promptShouldRespondToBot(new_message) {
-        await this.checkCooldown();
-        let prompt = this.profile.bot_responder;
-        let messages = this.agent.history.getHistory();
-        messages.push({role: 'user', content: new_message});
-        prompt = await this.replaceStrings(prompt, null, null, messages);
-        let res = await this.chat_model.sendRequest([], prompt);
-        return res.trim().toLowerCase() === 'respond';
-    }
+	async promptShouldRespondToBot(new_message) {
+		await this.checkCooldown();
+		let prompt = this.profile.bot_responder;
+		let messages = this.agent.history.getHistory();
+		messages.push({ role: 'user', content: new_message });
+		prompt = await this.replaceStrings(prompt, null, null, messages);
+		let res = await this.triage_model.sendRequest([], prompt);
+		return res.trim().toLowerCase() === 'respond';
+	}
 
     async promptVision(messages, imageBuffer) {
         await this.checkCooldown();

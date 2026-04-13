@@ -34,33 +34,36 @@ export class Gemini {
         this.genAI = new GoogleGenAI({apiKey: getKey('GEMINI_API_KEY')});
     }
 
-    async sendRequest(turns, systemMessage) {
-        console.log('Awaiting Google API response...');
+	async sendRequest(turns, systemMessage) {
+		console.log('Awaiting Google API response...');
 
-        turns = strictFormat(turns);
-        let contents = [];
-        for (let turn of turns) {
-            contents.push({
-                role: turn.role === 'assistant' ? 'model' : 'user',
-                parts: [{ text: turn.content }]
-            });
-        }
+		turns = strictFormat(turns);
+		let contents = [];
+		for (let turn of turns) {
+			contents.push({
+				role: turn.role === 'assistant' ? 'model' : 'user',
+				parts: [{ text: turn.content }]
+			});
+		}
 
-        const result = await this.genAI.models.generateContent({
-            model: this.model_name || "gemini-2.5-flash",
-            contents: contents,
-            safetySettings: this.safetySettings,
-            config: {
-                systemInstruction: systemMessage,
-                ...(this.params || {})
-            }
-        });
-        const response = await result.text;
+		// Initialize the model correctly
+		const model = this.genAI.getGenerativeModel({ 
+			model: this.model_name || "gemini-1.5-flash" 
+		});
 
-        console.log('Received.');
+		const result = await model.generateContent({
+			contents: contents,
+			safetySettings: this.safetySettings,
+			generationConfig: {
+				...(this.params || {})
+			},
+			systemInstruction: systemMessage // This is vital for her personality!
+		});
 
-        return response;
-    }
+		const response = await result.response.text(); // Note the .response.text() call
+		console.log('Received.');
+		return response;
+	}
 
     async sendVisionRequest(turns, systemMessage, imageBuffer) {
         const imagePart = {

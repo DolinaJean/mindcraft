@@ -77,4 +77,5 @@ for (let profile of settings.profiles) {
     const profile_json = JSON.parse(readFileSync(profile, 'utf8'));
     settings.profile = profile_json;
     Mindcraft.createAgent(settings);
+
 }

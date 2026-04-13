@@ -64,22 +64,39 @@ class ItemNode {
         return this;
     }
 
-    setSmeltable(source_item) {
-        this.type = 'smelt';
-        if (this.manager.nodes['furnace'] === undefined)
-            this.manager.nodes['furnace'] = new ItemWrapper(this.manager, this.wrapper, 'furnace');
-        this.prereq = this.manager.nodes['furnace'];
+setSmeltable(source_item) {
+    this.type = 'smelt';
 
-        if (this.manager.nodes[source_item] === undefined)
-            this.manager.nodes[source_item] = new ItemWrapper(this.manager, this.wrapper, source_item);
-        if (this.manager.nodes['coal'] === undefined)
-            this.manager.nodes['coal'] = new ItemWrapper(this.manager, this.wrapper, 'coal');
-        this.recipe = [
-            {node: this.manager.nodes[source_item], quantity: 1},
-            {node: this.manager.nodes['coal'], quantity: 1}
-        ];
-        return this;
+    // Ensure furnace exists
+    if (this.manager.nodes['furnace'] === undefined)
+        this.manager.nodes['furnace'] = new ItemWrapper(this.manager, this.wrapper, 'furnace');
+
+    this.prereq = this.manager.nodes['furnace'];
+
+    // Source item
+    if (this.manager.nodes[source_item] === undefined)
+        this.manager.nodes[source_item] = new ItemWrapper(this.manager, this.wrapper, source_item);
+
+    // Accept multiple fuel types
+    const fuelTypes = ['coal', 'charcoal', 'coal_block', 'lava_bucket'];
+
+    this.fuelOptions = [];
+
+    for (const fuel of fuelTypes) {
+        if (this.manager.nodes[fuel] === undefined) {
+            this.manager.nodes[fuel] = new ItemWrapper(this.manager, this.wrapper, fuel);
+        }
+        this.fuelOptions.push(this.manager.nodes[fuel]);
     }
+
+    // Default recipe (fallback)
+    this.recipe = [
+        { node: this.manager.nodes[source_item], quantity: 1 },
+        { node: this.manager.nodes['coal'], quantity: 1 }
+    ];
+
+    return this;
+}
 
     setHuntable(animal_source) {
         this.type = 'hunt';

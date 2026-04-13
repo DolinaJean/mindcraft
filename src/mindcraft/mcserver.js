@@ -1,3 +1,5 @@
+// ./src/mindcraft/mcserver.js
+// discovers and validates the Minecraft server to connect to. It is not part of the web UI state flow.
 import net from 'net';
 import mc from 'minecraft-protocol';
 

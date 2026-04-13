@@ -2,12 +2,14 @@ import minecraftData from 'minecraft-data';
 import settings from '../agent/settings.js';
 import { createBot } from 'mineflayer';
 import prismarine_items from 'prismarine-item';
-import { pathfinder } from 'mineflayer-pathfinder';
+import { loader as baritoneLoader } from "@miner-org/mineflayer-baritone";
+//import { loader } from "@miner-org/mineflayer-baritone";
+import { Vec3 } from "vec3";
 import { plugin as pvp } from 'mineflayer-pvp';
 import { plugin as collectblock } from 'mineflayer-collectblock';
-import { plugin as autoEat } from 'mineflayer-auto-eat';
-import plugin from 'mineflayer-armor-manager';
-const armorManager = plugin;
+import { loader as autoEat } from 'mineflayer-auto-eat';
+import armorManager from 'mineflayer-armor-manager';
+
 let mc_version = settings.minecraft_version;
 let mcdata = null;
 let Item = null;
@@ -66,34 +68,68 @@ export function initBot(username) {
     }
 
     const bot = createBot(options);
+    bot._client.on('end', () => {
+        console.log('[mcdata debug] client end');
+    });
 
+    bot._client.on('close', () => {
+        console.log('[mcdata debug] client close');
+    });
+
+    bot._client.on('timeout', () => {
+        console.log('[mcdata debug] client timeout');
+    });
+
+    bot._client.on('error', (err) => {
+        console.log('[mcdata debug] client error:', err?.code, err?.message);
+    });
     // Throttle position packets to avoid kicks on Paper/Spigot servers
-    // Paper enforces stricter packet rate limits than vanilla, causing ECONNRESET
-    // when mineflayer sends position updates faster than 50ms apart
+    // Keep the MOST RECENT movement packet inside the throttle window.
     let lastPositionUpdate = 0;
     let pendingPositionPacket = null;
-    const POSITION_THROTTLE_MS = 50;
+    let pendingPositionPayload = null;
+
+    const POSITION_THROTTLE_MS = 50;		// IF STILL STUCK ON CORNERS A LOT, LOWER THIS BY 10 (STARTED AT 50)
     const originalWrite = bot._client.write.bind(bot._client);
+
     bot._client.write = function(name, data) {
         if (name === 'position' || name === 'position_look' || name === 'look') {
             const now = Date.now();
-            if (now - lastPositionUpdate < POSITION_THROTTLE_MS) {
-                // Queue this packet so the last position update is never lost
-                if (!pendingPositionPacket) {
-                    pendingPositionPacket = setTimeout(() => {
-                        pendingPositionPacket = null;
-                        lastPositionUpdate = Date.now();
-                        originalWrite(name, data);
-                    }, POSITION_THROTTLE_MS - (now - lastPositionUpdate));
+            const elapsed = now - lastPositionUpdate;
+
+            // If enough time has passed, send immediately.
+            if (elapsed >= POSITION_THROTTLE_MS) {
+                lastPositionUpdate = now;
+
+                if (pendingPositionPacket) {
+                    clearTimeout(pendingPositionPacket);
+                    pendingPositionPacket = null;
+                    pendingPositionPayload = null;
                 }
-                return;
+
+                return originalWrite(name, data);
             }
-            lastPositionUpdate = now;
-            if (pendingPositionPacket) {
-                clearTimeout(pendingPositionPacket);
-                pendingPositionPacket = null;
+
+            // Otherwise store ONLY the newest packet.
+            pendingPositionPayload = { name, data };
+
+            if (!pendingPositionPacket) {
+                pendingPositionPacket = setTimeout(() => {
+                    pendingPositionPacket = null;
+
+                    if (!pendingPositionPayload) return;
+
+                    const packet = pendingPositionPayload;
+                    pendingPositionPayload = null;
+                    lastPositionUpdate = Date.now();
+
+                    originalWrite(packet.name, packet.data);
+                }, POSITION_THROTTLE_MS - elapsed);
             }
+
+            return;
         }
+
         return originalWrite(name, data);
     };
 
@@ -114,13 +150,20 @@ export function initBot(username) {
         return originalEmit(event, ...args);
     };
 
-    bot.loadPlugin(pathfinder);
-    bot.loadPlugin(pvp);
-    bot.loadPlugin(collectblock);
-    bot.loadPlugin(autoEat);
-    bot.loadPlugin(armorManager); // auto equip armor
+console.log("[mcdata.js] Loading Baritone plugin...");
+bot.loadPlugin(baritoneLoader);
+console.log("[mcdata.js] Ashfinder after load:", !!bot.ashfinder);
+
+if (bot.ashfinder && !bot.baritone) {
+    bot.baritone = bot.ashfinder;
+}
+
+bot.loadPlugin(pvp);
+bot.loadPlugin(collectblock);
+bot.loadPlugin(autoEat);
+bot.loadPlugin(armorManager); // auto equip armor
     bot.once('resourcePack', () => {
-        bot.acceptResourcePack();
+    bot.acceptResourcePack();
     });
 
     bot.once('login', () => {
