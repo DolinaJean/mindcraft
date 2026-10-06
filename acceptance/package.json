@@ -1,0 +1,21 @@
+{
+  "name": "minecraft-acceptance-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "acceptance": "node src/cli.js"
+  },
+  "dependencies": {
+    "minecraft-data": "https://github.com/Complexity-ML/node-minecraft-data-26.2/releases/download/complexity-26.2.5/minecraft-data-complexity-26.2.5.tgz",
+    "mineflayer": "https://github.com/Complexity-ML/mineflayer-26.2/releases/download/complexity-26.2.3/mineflayer-complexity-26.2.3.tgz"
+  },
+  "overrides": {
+    "minecraft-data": "$minecraft-data",
+    "uuid": "11.1.1"
+  }
+}
