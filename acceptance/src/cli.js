@@ -20,9 +20,20 @@ const usage = `Minecraft Acceptance Bot (Java 26.2)
 
 function status () {
   const authExists = fs.existsSync(config.profilesFolder) && fs.readdirSync(config.profilesFolder).length > 0
+  let lastVerifiedLogin = null
+  if (fs.existsSync(config.reportsFolder)) {
+    const files = fs.readdirSync(config.reportsFolder).filter(name => name.endsWith('.json')).sort().reverse()
+    for (const name of files) {
+      const report = JSON.parse(fs.readFileSync(path.join(config.reportsFolder, name), 'utf8'))
+      if (report.player_uuid && report.steps?.some(step => step.name === 'player_spawn' && step.result === 'AUTOMATED PASS')) {
+        lastVerifiedLogin = { run_id: report.run_id, at: report.started_at, player_uuid: report.player_uuid }
+        break
+      }
+    }
+  }
   return { endpoint: `${config.host}:${config.port}`, version: config.version, authentication: 'microsoft',
     authAlias: config.alias, authCachePresent: authExists, authCachePath: config.profilesFolder,
-    reportPath: config.reportsFolder, playerLoginVerified: false }
+    reportPath: config.reportsFolder, playerLoginVerified: Boolean(lastVerifiedLogin), lastVerifiedLogin }
 }
 
 function latest () {
