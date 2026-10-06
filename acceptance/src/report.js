@@ -8,7 +8,8 @@ const config = require('./config')
 function newReport (test) {
   const now = new Date()
   return { run_id: `${now.toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`,
-    started_at: now.toISOString(), minecraft_version: config.version, test,
+    started_at: now.toISOString(), minecraft_version: config.version, target: config.target,
+    endpoint: `${config.host}:${config.port}`, test,
     player_uuid: null, steps: [], result: 'NOT TESTED', cleanup: 'NOT TESTED' }
 }
 

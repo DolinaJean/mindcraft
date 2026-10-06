@@ -13,13 +13,14 @@ const usage = `Minecraft Acceptance Bot (Java 26.2)
   whereami               Join and inspect player identity, position, dimension, backend evidence
   inventory              Join and report complete client inventory
   test smoke             Join, inspect, move briefly, query backend, disconnect
+  test local-smoke       Launch isolated offline Paper + Velocity lab, run smoke, stop lab
   report latest          Print latest JSON run report
   cleanup <run-id>       Explain recovery status for a run
   --dry-run              Show intended steps without connecting
 `
 
 function status () {
-  const authExists = fs.existsSync(config.profilesFolder) && fs.readdirSync(config.profilesFolder).length > 0
+  const authExists = config.auth === 'microsoft' && fs.existsSync(config.profilesFolder) && fs.readdirSync(config.profilesFolder).length > 0
   let lastVerifiedLogin = null
   if (fs.existsSync(config.reportsFolder)) {
     const files = fs.readdirSync(config.reportsFolder).filter(name => name.endsWith('.json')).sort().reverse()
@@ -31,16 +32,17 @@ function status () {
       }
     }
   }
-  return { endpoint: `${config.host}:${config.port}`, version: config.version, authentication: 'microsoft',
-    authAlias: config.alias, authCachePresent: authExists, authCachePath: config.profilesFolder,
+  return { target: config.target, endpoint: `${config.host}:${config.port}`, version: config.version, authentication: config.auth,
+    authAlias: config.alias, authCachePresent: authExists, authCachePath: config.auth === 'microsoft' ? config.profilesFolder : null,
     reportPath: config.reportsFolder, playerLoginVerified: Boolean(lastVerifiedLogin), lastVerifiedLogin }
 }
 
 function latest () {
   if (!fs.existsSync(config.reportsFolder)) throw new Error('No reports yet')
-  const files = fs.readdirSync(config.reportsFolder).filter(name => name.endsWith('.json')).sort()
+  const files = fs.readdirSync(config.reportsFolder).filter(name => name.endsWith('.json'))
   if (!files.length) throw new Error('No reports yet')
-  return JSON.parse(fs.readFileSync(path.join(config.reportsFolder, files.at(-1)), 'utf8'))
+  files.sort((a, b) => fs.statSync(path.join(config.reportsFolder, b)).mtimeMs - fs.statSync(path.join(config.reportsFolder, a)).mtimeMs)
+  return JSON.parse(fs.readFileSync(path.join(config.reportsFolder, files[0]), 'utf8'))
 }
 
 function cleanup (runId) {
@@ -92,11 +94,16 @@ async function main () {
   const command = args.filter(a => a !== '--dry-run').join(' ')
   if (!command || command === 'help') return console.log(usage)
   if (command === 'status') return console.log(JSON.stringify(status(), null, 2))
+  if (command === 'test local-smoke') {
+    if (config.target !== 'local-lab') throw new Error('test local-smoke requires the isolated local-lab target')
+    const { runLocalSmoke } = require('../scripts/local-lab')
+    return runLocalSmoke({ dryRun: dry })
+  }
   if (command === 'report latest') return console.log(JSON.stringify(latest(), null, 2))
   if (args[0] === 'cleanup' && args.length === 2) return console.log(JSON.stringify(cleanup(args[1]), null, 2))
   if (!['connect', 'whereami', 'inventory', 'test smoke'].includes(command)) throw new Error(`Unknown or unavailable command: ${command}. Run help.`)
-  if (dry) return console.log(JSON.stringify({ command, endpoint: `${config.host}:${config.port}`, version: config.version,
-    authentication: 'microsoft', planned: ['Authenticate with dedicated account', 'Join through public Velocity endpoint', 'Observe client state', ...(command === 'test smoke' ? ['Move forward for 700 ms', 'Query /server'] : []), 'Disconnect'], productionChanges: [] }, null, 2))
+  if (dry) return console.log(JSON.stringify({ command, target: config.target, endpoint: `${config.host}:${config.port}`, version: config.version,
+    authentication: config.auth, planned: [config.auth === 'microsoft' ? 'Authenticate with licensed Java account' : 'Use isolated offline local identity', 'Join through selected Velocity endpoint', 'Observe client state', ...(command === 'test smoke' ? ['Move forward for 700 ms', 'Query /server'] : []), 'Disconnect'], productionChanges: [] }, null, 2))
   await run(command)
 }
 

@@ -11,16 +11,20 @@ function safeReason (value) {
 }
 
 function connect (options = {}) {
-  fs.mkdirSync(config.profilesFolder, { recursive: true })
+  if (config.auth === 'microsoft') fs.mkdirSync(config.profilesFolder, { recursive: true })
   const state = { bot: null, events: [], connected: false, ended: false, kicked: null }
-  const bot = mineflayer.createBot({
+  const botOptions = {
     host: config.host, port: config.port, version: config.version,
-    username: config.alias, auth: 'microsoft', profilesFolder: config.profilesFolder,
-    logErrors: false, hideErrors: true,
-    onMsaCode: code => {
+    username: config.alias, auth: config.auth,
+    logErrors: false, hideErrors: true
+  }
+  if (config.auth === 'microsoft') {
+    botOptions.profilesFolder = config.profilesFolder
+    botOptions.onMsaCode = code => {
       if (options.onMsaCode) options.onMsaCode({ verification_uri: code.verification_uri, user_code: code.user_code, expires_in: code.expires_in })
     }
-  })
+  }
+  const bot = mineflayer.createBot(botOptions)
   state.bot = bot
   const track = (event, detail) => state.events.push({ at: new Date().toISOString(), event, detail })
   bot.on('login', () => { state.connected = true; track('login', { username: bot.username }) })

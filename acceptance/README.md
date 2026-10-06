@@ -4,9 +4,11 @@ Deterministic Java 26.2 client harness in the authoritative `C:\MinecraftAI\mind
 
 ## Current scope
 
-Milestone 1 implements Microsoft-authenticated connect, player spawn, position, dimension, game mode, health, food, experience, full inventory snapshot, bounded movement, a conservative `/server` backend query, disconnect, JSON/Markdown reports, and deterministic unit tests. `/server` is recorded as unknown unless its response unambiguously names a backend. Login, movement, and backend identification are **not verified** until a dedicated licensed Java account signs in and a real run succeeds.
+Milestone 1 implements connect, player spawn, position, dimension, game mode, health, food, experience, full inventory snapshot, bounded movement, a conservative `/server` backend query, disconnect, JSON/Markdown reports, and deterministic unit tests. `/server` is recorded as unknown unless its response unambiguously names a backend. The owner chose an **offline local identity**. The default target is now an isolated local Paper + Velocity lab; production remains authenticated and unchanged. Lab results prove only the local lab path, not public Velocity or production-world behavior.
 
-Milestones 2 and 3 (travel, inventory and Ender round trips, Creative isolation, GUI, treasure, machinery, and Manager correlation) require that first successful login. The harness creates no world fixtures in milestone 1. It does not have OP or RCON access.
+The local lab first login passed on 2026-10-06: `CodexTestBot`, offline UUID `d50e61be-d450-3b74-91b1-918afb61309e`, Java 26.2, backend `lab`, inventory snapshot, bounded movement, disconnect, and lab shutdown. The latest client run was `2026-10-06T19-26-04-982Z-788501`; the wrapper run was `2026-10-06T19-25-56-425Z-ff6f26`. Reports are under `C:\MinecraftAI\AcceptanceRuntime\reports\local-lab` and are intentionally outside Git. Local reports are not production acceptance.
+
+Milestones 2 and 3 for the **live Multiverse** (travel, inventory and Ender round trips, Creative isolation, GUI, treasure, machinery, and Manager correlation) remain pending. Production Paper has `proxies.velocity.online-mode: true`, matching authenticated production Velocity. PaperMC requires that setting to match the proxy. An offline proxy cannot be routed into those live backends without changing their authentication contract, so this harness does not do that. The local lab creates no production fixtures and gives the bot no OP or RCON access.
 
 ## Pinned 26.2 stack
 
@@ -32,11 +34,14 @@ connect
 whereami
 inventory
 test smoke
+test local-smoke
 report latest
 cleanup <run-id>
-test smoke --dry-run
+test local-smoke --dry-run
 ```
 
-The first real connection prints a Microsoft device sign-in URL and short code. Use a dedicated licensed Java account. The local authentication cache is in `C:\MinecraftAI\AcceptanceRuntime\auth`, outside Git; reports are in `C:\MinecraftAI\AcceptanceRuntime\reports`. Set `MC_ACCEPTANCE_AUTH_ALIAS` only to distinguish the account's local cache; the actual Minecraft name and UUID come from the authenticated profile. Never commit or paste the cache. Each live run has a timestamped ID and exits nonzero on test or cleanup failure.
+`test local-smoke` prepares and starts a private Paper 26.2 + Velocity lab on `127.0.0.1:25591` and `127.0.0.1:25590`, runs the offline `CodexTestBot` smoke, and gracefully stops both processes. The lab has its own random forwarding secret, world, and reports under `C:\MinecraftAI\AcceptanceRuntime`; it does not use the production forwarding secret or touch production backends. Run `test local-smoke --dry-run` to preview. Other live commands connect to the local lab while it is running.
+
+The optional `MC_ACCEPTANCE_TARGET=production` target keeps Microsoft device-code authentication through the public Velocity route. Its cache is in `C:\MinecraftAI\AcceptanceRuntime\auth`, outside Git. It requires a licensed Java account and is not part of the offline local account acceptance. Each live run has a timestamped ID and exits nonzero on test or cleanup failure.
 
 Voice infrastructure is separately monitored. This protocol client is not a Simple Voice Chat Fabric client and cannot prove spoken audio.
